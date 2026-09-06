@@ -1,0 +1,28 @@
+[project]
+name = "little-green-dot"
+version = "1.0.0"
+description = "macOS menu bar indicator: green dot when your AWS credentials are live, red when they are not."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "mikegc-aws" }]
+keywords = ["aws", "macos", "menubar", "credentials", "sts"]
+dependencies = [
+    "rumps>=0.4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/mikegc-aws/little-green-dot"
+
+[project.scripts]
+little-green-dot = "little_green_dot.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["little_green_dot"]
