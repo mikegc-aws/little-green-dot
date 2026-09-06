@@ -293,3 +293,15 @@ def test_failure_summary_names_what_it_checked(fake_cli, monkeypatch):
 
     assert "profile demo" in summary
     assert "ExpiredToken" in summary
+
+
+def test_describe_can_withhold_the_account_id(fake_cli):
+    """show_account is a screen-sharing switch; the tooltip must honour it."""
+    fake_cli["sts"] = completed(0, stdout=json.dumps(VALID_IDENTITY))
+    fake_cli["configure"] = completed(1)
+
+    check = aws.check_credentials(Config(show_expiry=False))
+
+    assert "123456789012" in check.describe(include_account=True)
+    assert "123456789012" not in check.describe(include_account=False)
+    assert "Admin" in check.describe(include_account=False)

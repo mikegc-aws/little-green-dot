@@ -25,6 +25,15 @@ DRAIN_INTERVAL = 0.5  # seconds; how often the main thread applies worker result
 STALE_GRACE = 30  # seconds of slack before a missed poll counts as stale
 
 
+def sentence_case(text: str) -> str:
+    """Capitalise the first letter and leave the rest alone.
+
+    Not str.capitalize(), which lowercases the remainder and would misreport a
+    profile named "Prod-Admin" as "Prod-admin".
+    """
+    return text[:1].upper() + text[1:]
+
+
 def staleness_limit(config: Config, healthy: bool) -> float:
     """How old a result may get before we stop trusting it.
 
@@ -210,11 +219,13 @@ class LittleGreenDot(rumps.App):
         self._last = check
         self._stale = False
         self.title = self._title_for(check)
-        self._set_tooltip(check.summary)
+        self._set_tooltip(check.describe(include_account=self._config.show_account))
 
         if check.identity is not None:
             name = check.identity.name
-            session = check.identity.session
+            # The session name is usually a username, so it belongs with the
+            # other identifying detail that show_arn controls.
+            session = check.identity.session if self._config.show_arn else None
             self.identity_item.title = f"AWS: ✓ {name}" + (f"  ({session})" if session else "")
             self.arn_item.title = check.identity.arn
             self.arn_item.hidden = not self._config.show_arn
@@ -236,7 +247,7 @@ class LittleGreenDot(rumps.App):
             self.expiry_item.hidden = True
 
         stamp = check.checked_at.astimezone().strftime("%H:%M:%S")
-        self.checked_item.title = f"{check.source.capitalize()} · checked {stamp}"
+        self.checked_item.title = f"{sentence_case(check.source)} · checked {stamp}"
 
         self._maybe_notify(check)
         self._last_state = check.state

@@ -6,7 +6,7 @@ refreshing must stop being displayed as if it were current.
 
 from __future__ import annotations
 
-from little_green_dot.app import STALE_GRACE, staleness_limit
+from little_green_dot.app import STALE_GRACE, sentence_case, staleness_limit
 from little_green_dot.config import Config
 
 
@@ -38,3 +38,11 @@ def test_limit_is_finite_for_every_sane_config():
                 Config(interval_seconds=interval, timeout_seconds=timeout), healthy=True
             )
             assert interval < limit < interval + 300
+
+
+def test_sentence_case_preserves_profile_name_casing():
+    """str.capitalize() would lowercase the rest and display a name that does
+    not exist, which is a lie about which credentials are being watched."""
+    assert sentence_case("profile Prod-Admin") == "Profile Prod-Admin"
+    assert sentence_case("environment credentials") == "Environment credentials"
+    assert sentence_case("") == ""

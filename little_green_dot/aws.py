@@ -109,13 +109,22 @@ class Check:
 
     @property
     def summary(self) -> str:
-        """One line suitable for a tooltip or a terminal."""
+        """One line for a terminal, where the user asked for everything."""
+        return self.describe()
+
+    def describe(self, *, include_account: bool = True) -> str:
+        """One line suitable for a tooltip or a terminal.
+
+        `include_account` exists so the hover text can honour show_account — a
+        privacy switch that the tooltip ignored would be no switch at all.
+        """
         if self.identity is None:
             # Name the source even on failure: "not logged in" is much less
             # useful if you cannot tell what it tried to check.
             return f"{self.glyph} AWS ({self.source}): {self.error or self.state.value}"
         bits = [f"{self.glyph} {self.identity.name}", self.source]
-        bits.append(f"account {self.identity.account}")
+        if include_account and self.identity.account:
+            bits.append(f"account {self.identity.account}")
         if self.expires_at:
             bits.append(f"expires in {format_remaining(self.remaining_seconds)}")
         return " · ".join(bits)
