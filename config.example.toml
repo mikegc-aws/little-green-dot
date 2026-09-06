@@ -9,6 +9,10 @@
 
 # --- which credentials to watch ---------------------------------------------
 
+# Pinning a profile is recommended. The AWS CLI ranks environment credentials
+# above AWS_PROFILE, so setting this also makes the tool strip AWS_ACCESS_KEY_ID
+# and friends from the environment it hands the CLI — otherwise stale keys in
+# your shell could show green while this profile had actually expired.
 # Leave unset to follow AWS_PROFILE (or the default profile).
 # profile = "my-profile"
 # region = "us-east-1"
@@ -22,11 +26,21 @@
 
 # --- appearance --------------------------------------------------------------
 
+# "dots" gives 🟢🟡🔴⚪. "marks" gives ✓ ! ✕ ? which stay readable without
+# colour — red and green dots are the same shape, so they are no help if you
+# have red-green colour blindness.
+# symbols = "dots"
+
 # show_label = false   # show the role name next to the dot in the menu bar.
                        # Handy when running more than one dot at once.
-# show_account = true  # show the account id in the dropdown
 # warn_minutes = 15    # dot turns amber once expiry is this close
 # notify = true        # macOS notification when the state changes
+
+# The dropdown is one click away from your account id, and the ARN row also
+# carries your session name. Turn these off if you present or screen share to
+# audiences who should not see them.
+# show_account = true
+# show_arn = true
 
 # --- expiry ------------------------------------------------------------------
 

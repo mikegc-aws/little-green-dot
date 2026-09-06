@@ -177,6 +177,77 @@ def test_environment_is_scoped_to_the_configured_profile(monkeypatch):
     assert env["AWS_PAGER"] == ""
 
 
+def test_pinned_profile_wins_over_ambient_env_credentials(monkeypatch):
+    """The AWS CLI ranks env credentials above AWS_PROFILE.
+
+    Left in place, long-lived keys in the environment would be reported as
+    healthy while the profile you actually pinned had expired — a false green.
+    """
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAAMBIENT")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "ambient-token")
+    monkeypatch.setenv("AWS_DEFAULT_PROFILE", "somewhere-else")
+
+    env = aws.build_env(Config(profile="demo"))
+
+    assert env["AWS_PROFILE"] == "demo"
+    for leaked in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                   "AWS_SESSION_TOKEN", "AWS_DEFAULT_PROFILE"):
+        assert leaked not in env
+
+
+def test_ambient_credentials_are_left_alone_when_no_profile_is_pinned(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAAMBIENT")
+
+    env = aws.build_env(Config())
+
+    assert env["AWS_ACCESS_KEY_ID"] == "AKIAAMBIENT"
+
+
+@pytest.mark.parametrize(
+    ("pinned", "environment", "expected"),
+    [
+        ("demo", {}, "profile demo"),
+        ("demo", {"AWS_ACCESS_KEY_ID": "AKIA"}, "profile demo"),
+        (None, {"AWS_ACCESS_KEY_ID": "AKIA"}, "environment credentials"),
+        (None, {"AWS_PROFILE": "shell"}, "profile shell"),
+        (None, {}, "default profile"),
+    ],
+)
+def test_credential_source_is_honest(monkeypatch, pinned, environment, expected):
+    for name in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ACCESS_KEY_ID",
+                 "AWS_SESSION_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    assert aws.credential_source(Config(profile=pinned)) == expected
+
+
+def test_marks_style_needs_no_colour_to_read():
+    dots = {aws.glyph(state, "dots") for state in State}
+    marks = {aws.glyph(state, "marks") for state in State}
+
+    assert len(dots) == len(marks) == 4
+    assert not (dots & marks)
+    assert aws.glyph(State.VALID, "marks") == "✓"
+    assert aws.glyph(State.INVALID, "marks") == "✕"
+
+
+def test_unknown_symbol_style_falls_back_to_dots():
+    assert aws.glyph(State.VALID, "hieroglyphs") == "🟢"
+
+
+def test_summary_uses_the_configured_symbols(fake_cli):
+    fake_cli["sts"] = completed(0, stdout=json.dumps(VALID_IDENTITY))
+    fake_cli["configure"] = completed(1)
+
+    summary = aws.check_credentials(Config(symbols="marks", show_expiry=False)).summary
+
+    assert summary.startswith("✓ Admin")
+    assert "🟢" not in summary
+
+
 @pytest.mark.parametrize(
     ("arn", "expected"),
     [
@@ -212,3 +283,13 @@ def test_parse_expiration_normalises_to_utc(value):
 def test_parse_expiration_rejects_rubbish():
     assert aws.parse_expiration("tomorrow-ish") is None
     assert aws.parse_expiration(None) is None
+
+
+def test_failure_summary_names_what_it_checked(fake_cli, monkeypatch):
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    fake_cli["sts"] = completed(1, stderr="ExpiredToken: the token is expired")
+
+    summary = aws.check_credentials(Config(profile="demo")).summary
+
+    assert "profile demo" in summary
+    assert "ExpiredToken" in summary

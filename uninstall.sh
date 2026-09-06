@@ -29,9 +29,13 @@ for target in "$PLIST" "$LOG"; do
     say "removed $target"
   fi
 done
-if [[ -d "$VENV" ]]; then
+# Guarded: only delete something that really is a virtual environment, so a
+# surprising REPO value can never turn this into a destructive rm -rf.
+if [[ -f "$VENV/pyvenv.cfg" ]]; then
   rm -rf "$VENV"
   say "removed $VENV"
+elif [[ -e "$VENV" ]]; then
+  say "left $VENV alone: it does not look like a virtual environment"
 fi
 
 if $REMOVE_CONFIG; then

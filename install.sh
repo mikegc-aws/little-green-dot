@@ -40,9 +40,10 @@ fi
 
 step "Building the virtual environment in .venv"
 if command -v uv >/dev/null 2>&1; then
-  say "using uv"
-  uv venv --allow-existing "$VENV" >/dev/null
-  uv pip install --quiet --python "$VENV/bin/python" --editable "$REPO"
+  # --frozen installs exactly what uv.lock pins, with hashes, so an install today
+  # gets the same reviewed dependencies as an install last month.
+  say "using uv with the committed lockfile"
+  (cd "$REPO" && uv sync --frozen --quiet)
 else
   command -v python3 >/dev/null 2>&1 || die "Need either uv or python3 (3.11+)."
   python3 - <<'PY' || die "Python 3.11 or newer is required."
@@ -50,6 +51,7 @@ import sys
 sys.exit(0 if sys.version_info >= (3, 11) else 1)
 PY
   say "using $(python3 --version)"
+  say "note: this path resolves dependencies fresh; install uv to use uv.lock"
   python3 -m venv "$VENV"
   "$VENV/bin/pip" install --quiet --upgrade pip
   "$VENV/bin/pip" install --quiet --editable "$REPO"

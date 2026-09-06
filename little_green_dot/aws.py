@@ -32,20 +32,39 @@ class State(str, Enum):
     VALID = "valid"  # credentials work
     EXPIRING = "expiring"  # they work, but not for much longer
     INVALID = "invalid"  # AWS told us no
-    UNKNOWN = "unknown"  # we could not find out (no CLI, timeout, offline)
+    UNKNOWN = "unknown"  # we could not find out (no CLI, timeout, offline, stale)
 
     @property
     def dot(self) -> str:
-        return {
-            State.VALID: "🟢",
-            State.EXPIRING: "🟡",
-            State.INVALID: "🔴",
-            State.UNKNOWN: "⚪",
-        }[self]
+        return GLYPHS["dots"][self]
 
     @property
     def healthy(self) -> bool:
         return self in (State.VALID, State.EXPIRING)
+
+
+# Two ways to render the state. "dots" is the obvious one; "marks" exists because
+# red and green dots are the same shape, which is no use to the ~8% of men with
+# red-green colour blindness. Marks are distinguishable without any colour.
+GLYPHS: dict[str, dict[State, str]] = {
+    "dots": {
+        State.VALID: "🟢",
+        State.EXPIRING: "🟡",
+        State.INVALID: "🔴",
+        State.UNKNOWN: "⚪",
+    },
+    "marks": {
+        State.VALID: "✓",
+        State.EXPIRING: "!",
+        State.INVALID: "✕",
+        State.UNKNOWN: "?",
+    },
+}
+SYMBOL_STYLES = tuple(GLYPHS)
+
+
+def glyph(state: State, style: str = "dots") -> str:
+    return GLYPHS.get(style, GLYPHS["dots"])[state]
 
 
 @dataclass(frozen=True)
@@ -81,15 +100,21 @@ class Check:
     profile: str | None = None
     region: str | None = None
     error: str | None = None
+    source: str = "default profile"  # human-readable "where these came from"
+    style: str = "dots"
+
+    @property
+    def glyph(self) -> str:
+        return glyph(self.state, self.style)
 
     @property
     def summary(self) -> str:
         """One line suitable for a tooltip or a terminal."""
         if self.identity is None:
-            return f"{self.state.dot} AWS: {self.error or self.state.value}"
-        bits = [f"{self.state.dot} {self.identity.name}"]
-        if self.profile:
-            bits.append(f"profile {self.profile}")
+            # Name the source even on failure: "not logged in" is much less
+            # useful if you cannot tell what it tried to check.
+            return f"{self.glyph} AWS ({self.source}): {self.error or self.state.value}"
+        bits = [f"{self.glyph} {self.identity.name}", self.source]
         bits.append(f"account {self.identity.account}")
         if self.expires_at:
             bits.append(f"expires in {format_remaining(self.remaining_seconds)}")
@@ -161,11 +186,29 @@ def find_aws_cli(config: Config) -> str | None:
     return next((p for p in _CLI_FALLBACKS if Path(p).is_file()), None)
 
 
+# Credentials the AWS CLI reads straight from the environment. These take
+# precedence over AWS_PROFILE, so leaving them in place while a profile is pinned
+# means the dot reports on the wrong credentials entirely — including the
+# dangerous case of long-lived keys showing green while your pinned SSO profile
+# has expired.
+_AMBIENT_CREDENTIAL_VARS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_CREDENTIAL_EXPIRATION",
+    "AWS_DEFAULT_PROFILE",
+)
+
+
 def build_env(config: Config) -> dict[str, str]:
     """Environment for the CLI child process."""
     env = dict(os.environ)
     if config.profile:
         env["AWS_PROFILE"] = config.profile
+        # Pinning a profile has to actually mean that profile.
+        for name in _AMBIENT_CREDENTIAL_VARS:
+            env.pop(name, None)
     if config.region:
         env["AWS_REGION"] = config.region
         env["AWS_DEFAULT_REGION"] = config.region
@@ -187,31 +230,48 @@ def _run(cli: str, args: list[str], config: Config) -> subprocess.CompletedProce
     )
 
 
+def credential_source(config: Config) -> str:
+    """Describe, honestly, which credentials the CLI will actually use.
+
+    Env-var credentials outrank AWS_PROFILE, so saying "profile foo" when
+    AWS_ACCESS_KEY_ID is set would be a lie. Pinning a profile in the config
+    removes the ambiguity — see build_env.
+    """
+    if config.profile:
+        return f"profile {config.profile}"
+    if os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("AWS_SESSION_TOKEN"):
+        return "environment credentials"
+    profile = os.environ.get("AWS_PROFILE") or os.environ.get("AWS_DEFAULT_PROFILE")
+    return f"profile {profile}" if profile else "default profile"
+
+
 def check_credentials(config: Config) -> Check:
     """Ask STS who we are. This is the whole point of the tool."""
     now = datetime.now(timezone.utc)
-    profile = config.profile or os.environ.get("AWS_PROFILE")
-    region = config.region or os.environ.get("AWS_REGION")
+    common = {
+        "profile": config.profile or os.environ.get("AWS_PROFILE"),
+        "region": config.region or os.environ.get("AWS_REGION"),
+        "source": credential_source(config),
+        "style": config.symbols,
+    }
+
+    def outcome(state: State, **extra) -> Check:
+        return Check(state, now, **common, **extra)
 
     cli = find_aws_cli(config)
     if cli is None:
-        return Check(State.UNKNOWN, now, profile=profile, region=region,
-                     error="AWS CLI not found")
+        return outcome(State.UNKNOWN, error="AWS CLI not found")
 
     try:
         result = _run(cli, ["sts", "get-caller-identity", "--output", "json"], config)
     except subprocess.TimeoutExpired:
-        return Check(State.UNKNOWN, now, profile=profile, region=region,
-                     error=f"timed out after {config.timeout_seconds}s")
+        return outcome(State.UNKNOWN, error=f"timed out after {config.timeout_seconds}s")
     except OSError as exc:
-        return Check(State.UNKNOWN, now, profile=profile, region=region, error=str(exc))
+        return outcome(State.UNKNOWN, error=str(exc))
 
     if result.returncode != 0:
-        return Check(
+        return outcome(
             classify_cli_error(result.stderr),
-            now,
-            profile=profile,
-            region=region,
             error=first_line(result.stderr) or f"aws exited {result.returncode}",
         )
 
@@ -223,8 +283,7 @@ def check_credentials(config: Config) -> Check:
             user_id=str(payload.get("UserId", "")),
         )
     except (json.JSONDecodeError, KeyError, TypeError):
-        return Check(State.UNKNOWN, now, profile=profile, region=region,
-                     error="unexpected response from aws sts")
+        return outcome(State.UNKNOWN, error="unexpected response from aws sts")
 
     expires_at = fetch_expiry(cli, config) if config.show_expiry else None
     state = State.VALID
@@ -235,8 +294,7 @@ def check_credentials(config: Config) -> Check:
         elif remaining <= config.warn_minutes * 60:
             state = State.EXPIRING
 
-    return Check(state, now, identity=identity, expires_at=expires_at,
-                 profile=profile, region=region)
+    return outcome(state, identity=identity, expires_at=expires_at)
 
 
 def classify_cli_error(stderr: str) -> State:

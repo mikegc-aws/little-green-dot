@@ -8,8 +8,12 @@ A tiny macOS menu bar indicator that answers one question at a glance:
 🟢  credentials are active
 🟡  active, but expiring within 15 minutes
 🔴  AWS says no — you are not logged in
-⚪  can't tell (offline, AWS CLI missing, timed out)
+⚪  can't tell (offline, AWS CLI missing, timed out, or the answer went stale)
 ```
+
+Red and green dots are the same shape, which is no help if you have red-green
+colour blindness. Set `symbols = "marks"` for `✓ ! ✕ ?` instead, which read
+without any colour at all.
 
 Click the dot and it tells you which role you are, the account, and how long you
 have left. Hover and the same summary appears as a tooltip. It re-checks on a
@@ -34,6 +38,22 @@ aws sts get-caller-identity
 
 Exit 0 means green. A credentials error means red. A *network* error means white,
 not red — a flaky wifi connection should never tell you your session is gone.
+
+A stale answer also means white. If nothing has refreshed the dot for longer than
+a poll interval — wedged AWS CLI, laptop just back from a long sleep, worker
+thread died — it stops showing the last known state and says how old the answer
+is. A green dot that quietly stopped updating would be worse than no dot at all,
+since false confidence is the exact failure this tool exists to prevent.
+
+### Pin your profile
+
+If you set `profile`, the dot reports on *that* profile and nothing else — the
+tool strips `AWS_ACCESS_KEY_ID` and friends from the environment it hands the CLI.
+This matters: the AWS CLI ranks environment credentials **above** `AWS_PROFILE`,
+so without that, stale keys sitting in your shell environment would be what got
+checked. Long-lived IAM user keys showing green while your SSO session had
+expired is precisely the false green you do not want. With no `profile` set the
+dot is honest about it and reports "environment credentials".
 
 ## Install
 
@@ -91,8 +111,10 @@ invalid_interval_seconds = 15    # faster re-checks while the dot is red,
                                  # so it goes green promptly after you log in
 timeout_seconds = 10
 
+symbols = "dots"                 # "dots" for 🟢🔴, "marks" for ✓✕
 show_label = false               # put the role name next to the dot
 show_account = true              # show the account id in the dropdown
+show_arn = true                  # show the full ARN row
 show_expiry = true               # look up expiry (see Security below)
 warn_minutes = 15                # amber dot once expiry is this close
 notify = true                    # notification when the state changes
@@ -117,22 +139,57 @@ Set `show_label = true` in each so you can tell the dots apart.
 ## Security
 
 This is a small tool that watches your credentials, so it is worth being precise
-about what it does:
+about what it does.
 
-- **It never stores, prints, or transmits credentials.** No files are written
-  other than the config file you edit and a plain-text activity log.
-- **It only ever runs the AWS CLI**, as a fixed argument list with a timeout and
-  no shell involved. There is no way to configure a command for it to execute.
-- **It makes no network calls of its own.** The only traffic is the AWS CLI
-  talking to the STS endpoint.
-- **`show_expiry` needs one extra call:** `aws configure export-credentials`,
-  whose output includes live credential material. The response is parsed in
-  memory for the `Expiration` field only and is never logged or written to disk.
-  If you would rather it never run, set `show_expiry = false`.
-- **The log** (`~/Library/Logs/little-green-dot.log`) records config problems and
-  errors. Error text comes from the AWS CLI and contains no secrets, but it can
-  include your profile name and account id.
-- **The launch agent** stores no secrets — just a `PATH` and this directory.
+**What it never does**
+
+- **Stores, prints, or transmits credentials.** The only files written are the
+  config file you edit and a plain-text activity log.
+- **Runs a shell.** It only ever executes the AWS CLI as a fixed argument list,
+  with a timeout, no shell, and stdin closed. There is no config option that
+  takes a command to run — the tool is read-only by design.
+- **Talks to the network itself.** The only traffic is the AWS CLI reaching STS.
+- **Needs sudo, or installs anything system-wide.**
+
+**Worth knowing**
+
+- **`show_expiry` costs one extra call.** The expiry countdown comes from
+  `aws configure export-credentials`, whose output contains live credential
+  material. It is parsed in memory for the `Expiration` field only and never
+  logged or written to disk. Set `show_expiry = false` and the tool never sees
+  credential material at all.
+- **`aws_cli_path` is an escape hatch, and it executes what you point it at.**
+  It is deliberately not restricted to a safe character set, because it has to be
+  able to name any path on your disk. Anyone who can write your config file can
+  therefore get code execution as you, persistently, via the launch agent. That
+  is a real consideration but not a meaningful escalation: anyone who can write
+  to your home directory can already edit this tool's source, or your shell
+  profile. Leave the option unset and CLI discovery is `PATH` plus the usual
+  Homebrew locations.
+- **Screen sharing.** The dropdown is one click from your account id, and the ARN
+  row also carries your session name, which is often your username. Since the
+  whole point of the dot is to reassure you *while presenting*, set
+  `show_arn = false` and `show_account = false` if your audience should not see
+  those. The dot itself reveals nothing.
+- **Dependencies are pinned.** `uv.lock` records exact versions with SHA-256
+  hashes, and `install.sh` uses `uv sync --frozen`, so an install today resolves
+  to the same reviewed packages as one last month. The no-uv fallback path
+  resolves fresh — install [uv](https://docs.astral.sh/uv/) to get the lock.
+- **The log** (`~/Library/Logs/little-green-dot.log`) records config problems,
+  stale-check notices, and unexpected errors — no secrets. It sits inside
+  `~/Library/Logs`, which macOS keeps at mode `700`. It is not rotated, though it
+  only grows when something is going wrong.
+- **The config file** is created mode `644` and holds no secrets (a profile name
+  and a region). Note that macOS home directories are world-readable by default,
+  so other local accounts on the machine can read it.
+- **The launch agent** stores no secrets — just a `PATH` and this directory. Put
+  no credentials in it.
+
+**What it is not.** It is not a security control and makes no attempt to resist a
+local attacker who already has your user account. It answers one question —
+"would an AWS call work right now?" — and tries hard not to lie about it. A green
+dot means STS answered a moment ago; it says nothing about whether the role has
+the permissions you need.
 
 ## How it fits together
 
@@ -143,12 +200,13 @@ about what it does:
 | `little_green_dot/app.py` | The menu bar app and its polling thread. |
 | `little_green_dot/cli.py` | Argument parsing and the `--once` modes. |
 | `install.sh` / `uninstall.sh` | Launch agent setup and removal. |
+| `uv.lock` | Exact pinned dependencies, with hashes. |
 
 The check runs on a worker thread and hands results to the main thread through a
 queue, so a slow or hanging AWS call can't freeze the menu bar.
 
 ```bash
-uv run pytest        # the test suite mocks the CLI, so it needs no credentials
+uv run --extra dev pytest   # stubs the CLI, so it needs no AWS credentials
 ```
 
 ## Troubleshooting

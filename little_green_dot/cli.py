@@ -74,6 +74,7 @@ def _run_once(config, *, as_json: bool) -> int:
             "checked_at": check.checked_at.isoformat(),
             "profile": check.profile,
             "region": check.region,
+            "credential_source": check.source,
             "role": check.identity.name if check.identity else None,
             "arn": check.identity.arn if check.identity else None,
             "account": check.identity.account if check.identity else None,

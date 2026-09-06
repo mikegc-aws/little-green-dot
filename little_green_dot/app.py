@@ -13,7 +13,7 @@ import queue
 import subprocess
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 
 import rumps
 
@@ -22,6 +22,16 @@ from .aws import Check, State
 from .config import Config, config_path, load_config
 
 DRAIN_INTERVAL = 0.5  # seconds; how often the main thread applies worker results
+STALE_GRACE = 30  # seconds of slack before a missed poll counts as stale
+
+
+def staleness_limit(config: Config, healthy: bool) -> float:
+    """How old a result may get before we stop trusting it.
+
+    One poll interval plus room for a slow check, so an ordinary late poll does
+    not trip it but a stopped poller does.
+    """
+    return config.poll_interval(healthy) + max(2 * config.timeout_seconds, STALE_GRACE)
 
 
 def log(message: str) -> None:
@@ -31,25 +41,30 @@ def log(message: str) -> None:
 
 
 class Poller(threading.Thread):
-    """Runs credential checks on a schedule and drops results on a queue."""
+    """Runs credential checks on a schedule and drops results on a queue.
+
+    Careful with attribute names here: threading.Thread uses several private ones
+    internally. `_stop` in particular is a Thread *method*, and shadowing it with
+    an Event breaks is_alive() as soon as the thread finishes.
+    """
 
     def __init__(self, config: Config, results: queue.Queue[Check]) -> None:
         super().__init__(name="lgd-poller", daemon=True)
         self._config = config
         self._results = results
         self._wake = threading.Event()
-        self._stop = threading.Event()
+        self._stopping = threading.Event()
         self._healthy = False
 
     def check_now(self) -> None:
         self._wake.set()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stopping.set()
         self._wake.set()
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stopping.is_set():
             try:
                 result = aws.check_credentials(self._config)
             except Exception as exc:  # never let the poller die
@@ -73,6 +88,7 @@ class LittleGreenDot(rumps.App):
         self._results: queue.Queue[Check] = queue.Queue()
         self._last: Check | None = None
         self._last_state: State | None = None
+        self._stale = False
 
         # Initial titles double as the keys rumps uses for its menu, so they need
         # to be distinct even though the first poll overwrites them.
@@ -150,9 +166,49 @@ class LittleGreenDot(rumps.App):
                 break
         if latest is not None:
             self._apply(latest)
+        self._check_freshness()
+
+    def _check_freshness(self) -> None:
+        """Never let a stale answer keep claiming everything is fine.
+
+        A green dot that stopped updating is worse than no dot at all: it invites
+        exactly the false confidence this tool exists to prevent. If the last
+        result has aged out — poller thread wedged inside a hung AWS CLI, machine
+        back from a long sleep, thread died outright — the display drops to
+        "unknown" and says how old the answer is.
+        """
+        if self._last is None:
+            return
+        age = (datetime.now(timezone.utc) - self._last.checked_at).total_seconds()
+        if age <= staleness_limit(self._config, self._last.state.healthy):
+            return
+
+        if not self._stale:
+            self._stale = True
+            log(f"last check is {int(age)}s old; showing unknown until it refreshes")
+            self._poller.check_now()
+
+        self.title = self._title_for(None)
+        self.identity_item.title = (
+            f"AWS: ? no answer for {aws.format_remaining(age)} — checking"
+        )
+        self._set_tooltip(
+            f"{aws.glyph(State.UNKNOWN, self._config.symbols)} AWS: last answer was "
+            f"{aws.format_remaining(age)} ago"
+        )
+        for item in (self.arn_item, self.account_item, self.expiry_item):
+            item.hidden = True
+
+        # A dead thread cannot recover on its own; a merely wedged one is left
+        # alone rather than leaking a replacement every half second.
+        if not self._poller.is_alive():
+            log("poller thread is dead; starting a replacement")
+            self._poller = Poller(self._config, self._results)
+            self._poller.start()
 
     def _apply(self, check: Check) -> None:
         self._last = check
+        self._stale = False
         self.title = self._title_for(check)
         self._set_tooltip(check.summary)
 
@@ -161,7 +217,7 @@ class LittleGreenDot(rumps.App):
             session = check.identity.session
             self.identity_item.title = f"AWS: ✓ {name}" + (f"  ({session})" if session else "")
             self.arn_item.title = check.identity.arn
-            self.arn_item.hidden = False
+            self.arn_item.hidden = not self._config.show_arn
             self.account_item.title = f"Account: {check.identity.account}"
             self.account_item.hidden = not self._config.show_account
         else:
@@ -179,17 +235,19 @@ class LittleGreenDot(rumps.App):
         else:
             self.expiry_item.hidden = True
 
-        profile = check.profile or "default"
         stamp = check.checked_at.astimezone().strftime("%H:%M:%S")
-        self.checked_item.title = f"Profile {profile} · checked {stamp}"
+        self.checked_item.title = f"{check.source.capitalize()} · checked {stamp}"
 
         self._maybe_notify(check)
         self._last_state = check.state
 
-    def _title_for(self, check: Check) -> str:
+    def _title_for(self, check: Check | None) -> str:
+        """Menu bar text. `None` means we no longer trust what we last knew."""
+        if check is None:
+            return aws.glyph(State.UNKNOWN, self._config.symbols)
         if not self._config.show_label or check.identity is None:
-            return check.state.dot
-        return f"{check.state.dot} {check.identity.name}"
+            return check.glyph
+        return f"{check.glyph} {check.identity.name}"
 
     def _set_tooltip(self, text: str) -> None:
         """Hover text on the menu bar item. Best effort — never fatal."""
@@ -237,8 +295,10 @@ _STARTER_CONFIG = """# little-green-dot configuration. Every option is optional.
 # invalid_interval_seconds = 15  # how often to re-check once the dot is red
 # timeout_seconds = 10
 
+# symbols = "dots"    # "dots" for 🟢🔴, or "marks" for ✓✕ (no colour needed)
 # show_label = false   # show the role name next to the dot in the menu bar
 # show_account = true  # show the account id in the dropdown
+# show_arn = true      # show the full ARN row (careful when screen sharing)
 # show_expiry = true   # look up credential expiry (see README security note)
 # warn_minutes = 15    # amber dot once expiry is this close
 # notify = true        # macOS notification when the state changes

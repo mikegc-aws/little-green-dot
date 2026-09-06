@@ -42,8 +42,10 @@ class Config:
     timeout_seconds: int = 10
 
     # Menu bar appearance.
+    symbols: str = "dots"  # "dots" (🟢🔴) or "marks" (✓✕), see aws.GLYPHS
     show_label: bool = False  # put the role name next to the dot
     show_account: bool = True  # show the account id in the dropdown
+    show_arn: bool = True  # show the full ARN row (account id + session name)
     show_expiry: bool = True  # look up and display credential expiry
     warn_minutes: int = 15  # amber dot once expiry is this close
 
@@ -106,6 +108,13 @@ def _from_mapping(raw: dict, source: str = "config") -> tuple[Config, list[str]]
     if config.timeout_seconds < 1:
         problems.append(f"{source}: timeout_seconds below 1s ignored")
         config = replace(config, timeout_seconds=1)
+    # Imported here rather than at module scope: aws imports this module, so a
+    # top-level import would be circular.
+    from .aws import SYMBOL_STYLES
+
+    if config.symbols not in SYMBOL_STYLES:
+        problems.append(f"{source}: symbols must be one of {', '.join(SYMBOL_STYLES)}")
+        config = replace(config, symbols="dots")
 
     return config, problems
 

@@ -132,3 +132,28 @@ def test_config_path_default_location(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
     assert config_path() == tmp_path / "little-green-dot" / "config.toml"
+
+
+def test_symbols_accepts_the_known_styles(tmp_path):
+    for style in ("dots", "marks"):
+        config, problems = load_config(write(tmp_path, f'symbols = "{style}"'))
+        assert config.symbols == style
+        assert problems == []
+
+
+def test_unknown_symbols_style_is_rejected(tmp_path):
+    config, problems = load_config(write(tmp_path, 'symbols = "sparkles"'))
+
+    assert config.symbols == "dots"
+    assert "symbols must be one of" in problems[0]
+
+
+def test_privacy_switches_can_be_turned_off(tmp_path):
+    config, problems = load_config(write(tmp_path, """
+        show_arn = false
+        show_account = false
+    """))
+
+    assert config.show_arn is False
+    assert config.show_account is False
+    assert problems == []
