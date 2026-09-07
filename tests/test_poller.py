@@ -41,17 +41,22 @@ def test_poller_does_not_shadow_thread_methods():
 
     Only methods matter here — Thread.__init__ legitimately sets some private
     instance attributes of its own, such as _initialized.
+
+    Deliberately introspects whatever Thread the interpreter actually has rather
+    than naming _stop: that method exists up to Python 3.12, where shadowing it
+    broke is_alive(), but CPython removed it in 3.13. The names to avoid are a
+    property of the running interpreter, not a fixed list.
     """
     methods = {
         name for name, value in vars(threading.Thread).items()
         if name.startswith("_") and callable(value)
     }
+    assert methods, "introspection found no private Thread methods; guard is vacuous"
     poller = Poller(Config(), queue.Queue())
 
     clashes = {name for name in vars(poller) if name in methods}
 
     assert not clashes, f"Poller attributes shadow Thread methods: {clashes}"
-    assert "_stop" in methods, "sanity check: _stop really is a Thread method"
 
 
 def test_is_alive_still_works_after_the_thread_finishes(stub_check):

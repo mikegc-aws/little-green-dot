@@ -234,6 +234,14 @@ queue, so a slow or hanging AWS call can't freeze the menu bar.
 uv run --extra dev pytest   # stubs the CLI, so it needs no AWS credentials
 ```
 
+CI runs the same suite on Python 3.11–3.13. Note that adding `--python 3.13` to
+that command rebuilds `.venv` on that interpreter, which is the one your launch
+agent is running from — re-run `./install.sh` afterwards to put it back.
+
+```bash
+./install.sh                # also safe to re-run any time
+```
+
 ## Troubleshooting
 
 **The dot is white.** Either the AWS CLI isn't on the launch agent's `PATH` (set
