@@ -1,5 +1,7 @@
 # little-green-dot
 
+[![tests](https://github.com/mikegc-aws/little-green-dot/actions/workflows/tests.yml/badge.svg)](https://github.com/mikegc-aws/little-green-dot/actions/workflows/tests.yml)
+
 A tiny macOS menu bar indicator that answers one question at a glance:
 
 **Do I have live AWS credentials right now?**
@@ -20,7 +22,29 @@ have left. Hover and the same summary appears as a tooltip. It re-checks on a
 timer, so the dot you glanced at two minutes ago is still true — which is the
 whole point when you are about to share your screen.
 
-<!-- Screenshot: drop an image of the menu bar dropdown here. -->
+```
+┌───────────────────────────────────────────────────────┐
+│ AWS: ✓ PowerUser  (alex)                              │
+│ arn:aws:sts::123456789012:assumed-role/PowerUser/alex │
+│ Account: 123456789012                                 │
+│ Expires: 2h 41m  (16:20)                              │
+├───────────────────────────────────────────────────────┤
+│ Profile prod-admin · checked 13:39:12                 │
+│ Check Now                                             │
+├───────────────────────────────────────────────────────┤
+│ Edit Config…                                          │
+│ Quit                                                  │
+└───────────────────────────────────────────────────────┘
+```
+
+The ARN and account rows can both be switched off — see [Security](#security) if
+you present to audiences who should not see them.
+
+<!--
+Prefer a real screenshot? Open the dropdown, press Cmd+Shift+4, drag over it,
+save it as docs/menu-bar.png, then replace the box above with:
+    ![The dropdown, showing role, account and time left](docs/menu-bar.png)
+-->
 
 ## Why
 
@@ -201,6 +225,7 @@ the permissions you need.
 | `little_green_dot/cli.py` | Argument parsing and the `--once` modes. |
 | `install.sh` / `uninstall.sh` | Launch agent setup and removal. |
 | `uv.lock` | Exact pinned dependencies, with hashes. |
+| `.github/workflows/tests.yml` | CI: tests on Python 3.11–3.13, shellcheck. |
 
 The check runs on a worker thread and hands results to the main thread through a
 queue, so a slow or hanging AWS call can't freeze the menu bar.
